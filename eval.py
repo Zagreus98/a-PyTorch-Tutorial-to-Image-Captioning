@@ -4,15 +4,17 @@ import torch.utils.data
 import torchvision.transforms as transforms
 from datasets import *
 from utils import *
-from nltk.translate.bleu_score import corpus_bleu
 import torch.nn.functional as F
 from tqdm import tqdm
+from evalfunc.bleu.bleu import Bleu
+from evalfunc.rouge.rouge import Rouge
+from evalfunc.cider.cider import Cider
 
 # Parameters
-data_folder = '/media/ssd/caption data'  # folder with data files saved by create_input_files.py
+data_folder = '/content/drive/MyDrive/Img_captioning/caption data/coco'  # folder with data files saved by create_input_files.py
 data_name = 'coco_5_cap_per_img_5_min_word_freq'  # base name shared by data files
-checkpoint = '../BEST_checkpoint_coco_5_cap_per_img_5_min_word_freq.pth.tar'  # model checkpoint
-word_map_file = '/media/ssd/caption data/WORDMAP_coco_5_cap_per_img_5_min_word_freq.json'  # word map, ensure it's the same the data was encoded with and the model was trained with
+checkpoint = '/content/drive/MyDrive/Img_captioning/Checkpoints/pretrained_embbedings_BEST_checkpoint_coco_5_cap_per_img_5_min_word_freq.pth.tar'  # model checkpoint
+word_map_file = '/content/drive/MyDrive/Img_captioning/caption data/coco/WORDMAP_coco_5_cap_per_img_5_min_word_freq.json'  # word map, ensure it's the same the data was encoded with and the model was trained with
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # sets device for model and PyTorch tensors
 cudnn.benchmark = True  # set to true only if inputs to model are fixed size; otherwise lot of computational overhead
 
@@ -48,8 +50,7 @@ def evaluate(beam_size):
         CaptionDataset(data_folder, data_name, 'TEST', transform=transforms.Compose([normalize])),
         batch_size=1, shuffle=True, num_workers=1, pin_memory=True)
 
-    # TODO: Batched Beam Search
-    # Therefore, do not use a batch_size greater than 1 - IMPORTANT!
+    # batch_size = 1 in order to computed the metrics using the beam search algorithm similar to inference
 
     # Lists to store references (true captions), and hypothesis (prediction) for each image
     # If for n images, we have n hypotheses, and references a, b, c... for each image, we need -
@@ -121,11 +122,11 @@ def evaluate(beam_size):
                 top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
 
             # Convert unrolled indices to actual indices of scores
-            prev_word_inds = top_k_words / vocab_size  # (s)
+            prev_word_inds = top_k_words // vocab_size  # (s)
             next_word_inds = top_k_words % vocab_size  # (s)
 
             # Add new words to sequences
-            seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
+            seqs = torch.cat((seqs[prev_word_inds], next_word_inds.unsqueeze(1)), dim=1)  # (s, step+1)
 
             # Which sequences are incomplete (didn't reach <end>)?
             incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
@@ -168,12 +169,30 @@ def evaluate(beam_size):
 
         assert len(references) == len(hypotheses)
 
-    # Calculate BLEU-4 scores
-    bleu4 = corpus_bleu(references, hypotheses)
+    # Calculate BLEU & CIDEr & METEOR & ROUGE scores
+    scorers = [
+        (Bleu(4), ["Bleu_1", "Bleu_2", "Bleu_3", "Bleu_4"]),
+        (Cider(), "CIDEr"),
+        (Rouge(), "ROUGE_L")
+    ]
 
-    return bleu4
-
+    # preprocess the lists of words into lists of captions in order to use the scorers
+    hypo = [[' '.join(hypo)] for hypo in [[str(x) for x in hypo] for hypo in hypotheses]]
+    ref = [[' '.join(reft) for reft in reftmp] for reftmp in [[[str(x) for x in reft] for reft in reftmp] for reftmp in references]]
+    
+    score = []
+    method = []
+    for scorer, method_i in scorers:
+        score_i, scores_i = scorer.compute_score(ref, hypo)
+        score.extend(score_i) if isinstance(score_i, list) else score.append(score_i)
+        method.extend(method_i) if isinstance(method_i, list) else method.append(method_i)
+    # create a dictionary with method : score corresponding to that metric
+    score_dict = dict(zip(method,  score))
+     
+    return score_dict
 
 if __name__ == '__main__':
-    beam_size = 1
-    print("\nBLEU-4 score @ beam size of %d is %.4f." % (beam_size, evaluate(beam_size)))
+    beam_size = 5
+    score_dict = evaluate(beam_size)
+    for method, score in score_dict.items():
+        print("\n%s score @ beam size of %d is %.4f." % (method, beam_size, score))

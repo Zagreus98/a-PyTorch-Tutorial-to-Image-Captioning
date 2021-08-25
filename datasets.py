@@ -4,7 +4,8 @@ import h5py
 import json
 import os
 
-
+# This is a subclass of PyTorch Dataset. It needs a __len__ method defined, which returns the size of the dataset,
+# and a __getitem__ method which returns the ith image, caption, and caption length.
 class CaptionDataset(Dataset):
     """
     A PyTorch Dataset class to be used in a PyTorch DataLoader to create batches.
@@ -45,6 +46,7 @@ class CaptionDataset(Dataset):
         # Remember, the Nth caption corresponds to the (N // captions_per_image)th image
         img = torch.FloatTensor(self.imgs[i // self.cpi] / 255.)
         if self.transform is not None:
+            # apply normalization
             img = self.transform(img)
 
         caption = torch.LongTensor(self.captions[i])
@@ -53,7 +55,7 @@ class CaptionDataset(Dataset):
 
         if self.split is 'TRAIN':
             return img, caption, caplen
-        else:
+        else: # if split is VALIDATION or TEST:
             # For validation of testing, also return all 'captions_per_image' captions to find BLEU-4 score
             all_captions = torch.LongTensor(
                 self.captions[((i // self.cpi) * self.cpi):(((i // self.cpi) * self.cpi) + self.cpi)])

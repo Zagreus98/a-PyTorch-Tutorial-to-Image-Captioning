@@ -3,10 +3,11 @@ import numpy as np
 import h5py
 import json
 import torch
-from scipy.misc import imread, imresize
+import cv2
 from tqdm import tqdm
 from collections import Counter
 from random import seed, choice, sample
+
 
 
 def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_image, min_word_freq, output_folder,
@@ -94,7 +95,6 @@ def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_i
 
             # Create dataset inside HDF5 file to store images
             images = h.create_dataset('images', (len(impaths), 3, 256, 256), dtype='uint8')
-
             print("\nReading %s images and captions, storing to file...\n" % split)
 
             enc_captions = []
@@ -112,11 +112,9 @@ def create_input_files(dataset, karpathy_json_path, image_folder, captions_per_i
                 assert len(captions) == captions_per_image
 
                 # Read images
-                img = imread(impaths[i])
-                if len(img.shape) == 2:
-                    img = img[:, :, np.newaxis]
-                    img = np.concatenate([img, img, img], axis=2)
-                img = imresize(img, (256, 256))
+                img = cv2.imread(impaths[i])
+                img = cv2.resize(img,(256,256))
+                img = img[:,:,::-1] # invert to RGB
                 img = img.transpose(2, 0, 1)
                 assert img.shape == (3, 256, 256)
                 assert np.max(img) <= 255
@@ -280,7 +278,9 @@ def accuracy(scores, targets, k):
     """
 
     batch_size = targets.size(0)
-    _, ind = scores.topk(k, 1, True, True)
+    # find the top 5 possibilites for each word in the batch
+    _, ind = scores.topk(k, 1, True, True) 
+    # check equality with the targets
     correct = ind.eq(targets.view(-1, 1).expand_as(ind))
     correct_total = correct.view(-1).float().sum()  # 0D tensor
     return correct_total.item() * (100.0 / batch_size)
