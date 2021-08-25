@@ -6,9 +6,7 @@ import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import skimage.transform
-import argparse
-from scipy.misc import imread, imresize
-from PIL import Image
+import cv2
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -29,11 +27,9 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
     vocab_size = len(word_map)
 
     # Read image and process
-    img = imread(image_path)
-    if len(img.shape) == 2:
-        img = img[:, :, np.newaxis]
-        img = np.concatenate([img, img, img], axis=2)
-    img = imresize(img, (256, 256))
+    img = cv2.imread(image_path)
+    img = cv2.resize(img, (256, 256))
+    img = img[...,::-1]
     img = img.transpose(2, 0, 1)
     img = img / 255.
     img = torch.FloatTensor(img).to(device)
@@ -75,7 +71,6 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
     # Start decoding
     step = 1
     h, c = decoder.init_hidden_state(encoder_out)
-
     # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
     while True:
 
@@ -97,18 +92,19 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
 
         # For the first step, all k points will have the same scores (since same k previous words, h, c)
+        # WE UNROLL THE SCORES INTO A SINGLE VECTOR
+        # scores.view(-1) o sa fie k * vocab_size
         if step == 1:
             top_k_scores, top_k_words = scores[0].topk(k, 0, True, True)  # (s)
         else:
             # Unroll and find top scores, and their unrolled indices
             top_k_scores, top_k_words = scores.view(-1).topk(k, 0, True, True)  # (s)
 
-        # Convert unrolled indices to actual indices of scores
-        prev_word_inds = top_k_words / vocab_size  # (s)
-        next_word_inds = top_k_words % vocab_size  # (s)
-
+        # Convert unrolled indices to actual indices of scores , remember the indices in scores (top_k_words) can reach k*vocab_size
+        prev_word_inds = top_k_words // vocab_size  # (s) # gives the indices for each sequence !!!
+        next_word_inds = top_k_words % vocab_size  # (s)  # gives the indices for the next words ( the position in the rows)
         # Add new words to sequences, alphas
-        seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
+        seqs = torch.cat((seqs[prev_word_inds], next_word_inds.unsqueeze(1)), dim=1)  # (s, step+1)
         seqs_alpha = torch.cat([seqs_alpha[prev_word_inds], alpha[prev_word_inds].unsqueeze(1)],
                                dim=1)  # (s, step+1, enc_image_size, enc_image_size)
 
@@ -131,7 +127,7 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         seqs_alpha = seqs_alpha[incomplete_inds]
         h = h[prev_word_inds[incomplete_inds]]
         c = c[prev_word_inds[incomplete_inds]]
-        encoder_out = encoder_out[prev_word_inds[incomplete_inds]]
+        encoder_out = encoder_out[prev_word_inds[incomplete_inds]] # use encoder out just for the incomplete sequences
         top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
         k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
 
@@ -139,7 +135,7 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         if step > 50:
             break
         step += 1
-
+    # find index for the best score from sequences to find the alpha masks and the actual sequence
     i = complete_seqs_scores.index(max(complete_seqs_scores))
     seq = complete_seqs[i]
     alphas = complete_seqs_alpha[i]
@@ -159,23 +155,28 @@ def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
     :param rev_word_map: reverse word mapping, i.e. ix2word
     :param smooth: smooth weights?
     """
-    image = Image.open(image_path)
-    image = image.resize([14 * 24, 14 * 24], Image.LANCZOS)
-
+    image = cv2.imread(image_path)
     words = [rev_word_map[ind] for ind in seq]
-
+    whole_caption =" ".join(words)
+    print(whole_caption)
+    plt.figure(1)
+    plt.imshow(image[...,::-1])
+    plt.axis('off')
+    plt.title(whole_caption)
+    print('-------------------------------------------------------')
+    image = cv2.resize(image, (14*60, 14*60), interpolation = cv2.INTER_LANCZOS4)
+    plt.figure(2)
     for t in range(len(words)):
         if t > 50:
             break
-        plt.subplot(np.ceil(len(words) / 5.), 5, t + 1)
-
+        plt.subplot(int(np.ceil(len(words) / 5.)), 5, t + 1)
         plt.text(0, 1, '%s' % (words[t]), color='black', backgroundcolor='white', fontsize=12)
-        plt.imshow(image)
+        plt.imshow(image[...,::-1])
         current_alpha = alphas[t, :]
         if smooth:
-            alpha = skimage.transform.pyramid_expand(current_alpha.numpy(), upscale=24, sigma=8)
+            alpha = skimage.transform.pyramid_expand(current_alpha.numpy(), upscale=60, sigma=8)
         else:
-            alpha = skimage.transform.resize(current_alpha.numpy(), [14 * 24, 14 * 24])
+            alpha = skimage.transform.resize(current_alpha.numpy(), [14 * 60, 14 * 60])
         if t == 0:
             plt.imshow(alpha, alpha=0)
         else:
@@ -186,18 +187,14 @@ def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Show, Attend, and Tell - Tutorial - Generate Caption')
-
-    parser.add_argument('--img', '-i', help='path to image')
-    parser.add_argument('--model', '-m', help='path to model')
-    parser.add_argument('--word_map', '-wm', help='path to word map JSON')
-    parser.add_argument('--beam_size', '-b', default=5, type=int, help='beam size for beam search')
-    parser.add_argument('--dont_smooth', dest='smooth', action='store_false', help='do not smooth alpha overlay')
-
-    args = parser.parse_args()
+    # paths for the inputs
+    img = 'catel3.jpg'
+    model = 'pretrained_embbedings_BEST_checkpoint_coco_5_cap_per_img_5_min_word_freq.pth.tar'
+    word_map = 'WORDMAP_coco_5_cap_per_img_5_min_word_freq.json'
+    beam_size = 5
 
     # Load model
-    checkpoint = torch.load(args.model, map_location=str(device))
+    checkpoint = torch.load(model, map_location=str(device))
     decoder = checkpoint['decoder']
     decoder = decoder.to(device)
     decoder.eval()
@@ -206,13 +203,13 @@ if __name__ == '__main__':
     encoder.eval()
 
     # Load word map (word2ix)
-    with open(args.word_map, 'r') as j:
+    with open(word_map, 'r') as j:
         word_map = json.load(j)
     rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
 
     # Encode, decode with attention and beam search
-    seq, alphas = caption_image_beam_search(encoder, decoder, args.img, word_map, args.beam_size)
+    seq, alphas = caption_image_beam_search(encoder, decoder, img, word_map, beam_size)
     alphas = torch.FloatTensor(alphas)
 
     # Visualize caption and attention of best sequence
-    visualize_att(args.img, seq, alphas, rev_word_map, args.smooth)
+    visualize_att(img, seq, alphas, rev_word_map, smooth=True)
